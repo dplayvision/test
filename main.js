@@ -988,11 +988,14 @@ $("saveBtn").addEventListener("click", async () => {
       record.createdAt = old?.createdAt || now;
       if (old?.cloudId) record.cloudId = old.cloudId;
     } else record.createdAt = now;
-    editingId = await saveRecord(record);
-    $("saveBtn").textContent = "💾 Mettre à jour la fiche";
-    status("formStatus", "Fiche enregistrée avec succès, photo comprise et texte brut conservé.");
+    await saveRecord(record);
     await refreshRecords();
     scheduleAutomaticSync();
+
+    // Après l'enregistrement, vider le formulaire pour préparer une nouvelle fiche.
+    // La fiche enregistrée reste dans l'historique et dans la synchronisation cloud.
+    resetForm();
+    status("formStatus", "Fiche enregistrée avec succès. Tu peux encoder une nouvelle fiche.");
   } catch (e) { status("formStatus", "Erreur d’enregistrement : " + e.message, true); }
 });
 $("resetBtn").addEventListener("click", () => { if (confirm("Effacer le formulaire et préparer une nouvelle fiche ?")) resetForm(); });
