@@ -1,7 +1,7 @@
 import { PaddleOCR } from "@paddleocr/paddleocr-js";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, collection, doc, getDocs, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, collection, doc, getDocs, setDoc, deleteDoc, serverTimestamp, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 (() => {
 "use strict";
@@ -23,6 +23,10 @@ const firebaseApp = initializeApp(firebaseConfig, "scan-chassis-sync");
 const auth = getAuth(firebaseApp);
 const cloudDB = getFirestore(firebaseApp);
 let cloudUser = null;
+let unsubscribeCloud = null;
+let cloudStartedUid = null;
+let automaticSyncTimer = null;
+let automaticSyncRunning = false;
 const CLOUD_APP_ID = "scan-chassis";
 function cloudStatus(id, message, error = false) {
   const el = document.getElementById(id);
@@ -163,6 +167,93 @@ async function cloudSyncAll() {
     `Synchronisation terminée : ${sent} envoyée(s), ${received} récupérée(s), ${updated} mise(s) à jour, ${deleted} suppression(s) répercutée(s).${skipped ? ` ${skipped} photo(s) non compressée(s) : elles restent sur le téléphone.` : ""}`,
     skipped > 0
   );
+}
+
+// Synchronisation automatique après une modification locale.
+function scheduleAutomaticSync() {
+  if (!cloudUser) return;
+  clearTimeout(automaticSyncTimer);
+  automaticSyncTimer = setTimeout(async () => {
+    if (!cloudUser || automaticSyncRunning) return;
+    automaticSyncRunning = true;
+    try {
+      await cloudSyncAll();
+    } catch (error) {
+      cloudStatus("cloudSyncStatus", "Synchronisation automatique impossible : " + (error.message || error), true);
+    } finally {
+      automaticSyncRunning = false;
+    }
+  }, 900);
+}
+
+// Écoute en temps réel les changements faits depuis l'autre téléphone.
+async function startCloudServices(user) {
+  if (!user || !db) return;
+  if (cloudStartedUid === user.uid) return;
+
+  if (unsubscribeCloud) {
+    unsubscribeCloud();
+    unsubscribeCloud = null;
+  }
+  cloudStartedUid = user.uid;
+
+  try {
+    await cloudSyncAll();
+    if (!cloudUser || cloudUser.uid !== user.uid) return;
+
+    unsubscribeCloud = onSnapshot(cloudRecordsRef(), async snapshot => {
+      let changed = false;
+      try {
+        for (const change of snapshot.docChanges()) {
+          if (change.type === "removed") continue;
+          const data = change.doc.data();
+          const cloudId = change.doc.id;
+          const localRecords = await allRecords();
+          const existing = localRecords.find(record => record.cloudId === cloudId);
+          const localTime = Number(existing?.updatedAt || existing?.createdAt || 0);
+          const remoteTime = Number(data.updatedAtMs || 0);
+
+          if (data.deleted) {
+            if (existing && remoteTime >= localTime) {
+              await deleteRecord(existing.id);
+              changed = true;
+            }
+            continue;
+          }
+
+          if (existing && localTime >= remoteTime) continue;
+          if (!data.orderNo || !data.frameNo) continue;
+
+          const record = {
+            ...(existing || {}),
+            ...(existing?.id ? { id: existing.id } : {}),
+            cloudId,
+            clientName: String(data.clientName || ""),
+            orderNo: String(data.orderNo || ""),
+            frameNo: String(data.frameNo || ""),
+            operations: Array.isArray(data.operations) ? data.operations : [],
+            notes: String(data.notes || ""),
+            ocrText: String(data.ocrText || ""),
+            photo: data.photo || existing?.photo || null,
+            photoType: data.photo ? (data.photoType || "image/jpeg") : (existing?.photoType || data.photoType || "image/jpeg"),
+            createdAt: Number(data.createdAt || existing?.createdAt || Date.now()),
+            updatedAt: remoteTime || Date.now()
+          };
+          await saveRecord(record);
+          changed = true;
+        }
+        if (changed) await refreshRecords();
+        cloudStatus("cloudSyncStatus", "Synchronisation automatique active : les changements des deux téléphones sont suivis.");
+      } catch (error) {
+        cloudStatus("cloudSyncStatus", "Erreur de réception cloud : " + (error.message || error), true);
+      }
+    }, error => {
+      cloudStatus("cloudSyncStatus", "Écoute cloud interrompue : " + (error.message || error), true);
+    });
+  } catch (error) {
+    cloudStartedUid = null;
+    cloudStatus("cloudSyncStatus", "Démarrage de la synchronisation impossible : " + (error.message || error), true);
+  }
 }
 
 let db = null, ocrInstance = null, currentPhoto = null, currentPhotoType = "image/jpeg", currentOCRText = "";
@@ -901,6 +992,7 @@ $("saveBtn").addEventListener("click", async () => {
     $("saveBtn").textContent = "💾 Mettre à jour la fiche";
     status("formStatus", "Fiche enregistrée avec succès, photo comprise et texte brut conservé.");
     await refreshRecords();
+    scheduleAutomaticSync();
   } catch (e) { status("formStatus", "Erreur d’enregistrement : " + e.message, true); }
 });
 $("resetBtn").addEventListener("click", () => { if (confirm("Effacer le formulaire et préparer une nouvelle fiche ?")) resetForm(); });
@@ -934,7 +1026,9 @@ $("importInput").addEventListener("change", async e => {
       });
       added++;
     }
-    await refreshRecords(); status("backupStatus", `Import terminé : ${added} ajoutée(s), ${skipped} ignorée(s).`);
+    await refreshRecords();
+    scheduleAutomaticSync();
+    status("backupStatus", `Import terminé : ${added} ajoutée(s), ${skipped} ignorée(s).`);
   } catch (err) { status("backupStatus", "Import impossible : " + err.message, true); }
   finally { e.target.value = ""; }
 });
@@ -1137,31 +1231,69 @@ if ($('saveSummaryImageBtn')) {
 const loginBtn = document.getElementById("googleLoginBtn");
 const logoutBtn = document.getElementById("googleLogoutBtn");
 const syncBtn = document.getElementById("cloudSyncBtn");
+
 if (loginBtn) loginBtn.addEventListener("click", async () => {
-  try { await signInWithPopup(auth, new GoogleAuthProvider()); }
-  catch (e) {
-    if (["auth/popup-blocked","auth/popup-closed-by-user","auth/cancelled-popup-request"].includes(e.code)) {
-      try { await signInWithRedirect(auth, new GoogleAuthProvider()); }
-      catch (err) { cloudStatus("cloudUserStatus", "Connexion impossible : "+err.message, true); }
-    } else cloudStatus("cloudUserStatus", "Connexion impossible : "+e.message, true);
+  const provider = new GoogleAuthProvider();
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+    await signInWithPopup(auth, provider);
+  } catch (e) {
+    if (["auth/popup-blocked", "auth/popup-closed-by-user", "auth/cancelled-popup-request"].includes(e.code)) {
+      try {
+        await setPersistence(auth, browserLocalPersistence);
+        await signInWithRedirect(auth, provider);
+      } catch (err) {
+        cloudStatus("cloudUserStatus", "Connexion impossible : " + err.message, true);
+      }
+    } else {
+      cloudStatus("cloudUserStatus", "Connexion impossible : " + e.message, true);
+    }
   }
 });
+
 if (logoutBtn) logoutBtn.addEventListener("click", async () => {
-  try { await signOut(auth); } catch(e) { cloudStatus("cloudUserStatus", e.message, true); }
+  try {
+    if (unsubscribeCloud) unsubscribeCloud();
+    unsubscribeCloud = null;
+    cloudStartedUid = null;
+    await signOut(auth);
+  } catch (e) {
+    cloudStatus("cloudUserStatus", e.message, true);
+  }
 });
+
 if (syncBtn) syncBtn.addEventListener("click", async () => {
   syncBtn.disabled = true;
-  try { await cloudSyncAll(); }
-  catch(e) { cloudStatus("cloudSyncStatus", "Échec de synchronisation : "+e.message, true); }
-  finally { syncBtn.disabled = !cloudUser; }
+  try {
+    await cloudSyncAll();
+  } catch (e) {
+    cloudStatus("cloudSyncStatus", "Échec de synchronisation : " + e.message, true);
+  } finally {
+    syncBtn.disabled = !cloudUser;
+  }
 });
-getRedirectResult(auth).catch(e => cloudStatus("cloudUserStatus", "Connexion Google : "+e.message, true));
+
+getRedirectResult(auth).catch(e =>
+  cloudStatus("cloudUserStatus", "Connexion Google : " + e.message, true)
+);
+
 onAuthStateChanged(auth, user => {
   cloudUser = user;
   if (loginBtn) loginBtn.hidden = !!user;
   if (logoutBtn) logoutBtn.hidden = !user;
   if (syncBtn) syncBtn.disabled = !user;
-  cloudStatus("cloudUserStatus", user ? `Connecté : ${user.email || user.displayName || "compte Google"}` : "Non connecté à Google");
+
+  if (user) {
+    cloudStatus("cloudUserStatus", `Connecté : ${user.email || user.displayName || "compte Google"}`);
+    if (db) startCloudServices(user);
+  } else {
+    if (unsubscribeCloud) unsubscribeCloud();
+    unsubscribeCloud = null;
+    cloudStartedUid = null;
+    clearTimeout(automaticSyncTimer);
+    cloudStatus("cloudUserStatus", "Non connecté à Google");
+    cloudStatus("cloudSyncStatus", "Connecte-toi pour synchroniser les fiches entre tes téléphones.");
+  }
 });
 
 const today = dateInputValue(new Date());
@@ -1169,7 +1301,12 @@ if ($('summaryStart')) $('summaryStart').value = today;
 if ($('summaryEnd')) $('summaryEnd').value = today;
 
 (async () => {
-  try { await openDB(); await refreshRecords(); }
-  catch (e) { status("formStatus", "Impossible d’ouvrir la base locale : " + e.message, true); }
+  try {
+    await openDB();
+    await refreshRecords();
+    if (cloudUser) await startCloudServices(cloudUser);
+  } catch (e) {
+    status("formStatus", "Impossible d’ouvrir la base locale : " + e.message, true);
+  }
 })();
 })();
