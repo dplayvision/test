@@ -117,13 +117,17 @@ async function cloudSyncAll() {
       syncedAt: serverTimestamp(),
       deleted: false
     };
-    await setDoc(doc(ref, cloudId), payload);
-    remoteById.set(cloudId, payload);
-    sent++;
+    // IMPORTANT : enregistrer l'identifiant cloud localement AVANT de créer
+    // le document Firestore. Sinon onSnapshot peut recevoir le nouveau document
+    // avant que cloudId soit associé à la fiche locale et créer un doublon.
     if (!rec.cloudId) {
       rec.cloudId = cloudId;
       await saveRecord(rec);
     }
+
+    await setDoc(doc(ref, cloudId), payload);
+    remoteById.set(cloudId, payload);
+    sent++;
   }
 
   // 3) Fusionner les fiches cloud : créer celles qui manquent et mettre à jour celles qui sont plus récentes.
@@ -257,6 +261,7 @@ async function startCloudServices(user) {
 }
 
 let db = null, ocrInstance = null, currentPhoto = null, currentPhotoType = "image/jpeg", currentOCRText = "";
+let isSavingRecord = false;
 let previewUrl = null, liveStream = null, isReading = false, editingId = null, ocrEditOpen = false, photoRotation = 0;
 let cropImage = null, cropRect = null, cropDrag = null, cropScale = 1, originalLabelPhoto = null, originalLabelPhotoType = "image/jpeg";
 let cropDragMode = null, cropResizeHandle = null, cropDragStart = null, cropRectStart = null;
@@ -959,6 +964,11 @@ $("captureBtn").addEventListener("click", async () => {
 });
 $("stopScanBtn").addEventListener("click", () => { stopCamera(); status("scanStatus", "Caméra fermée."); });
 $("saveBtn").addEventListener("click", async () => {
+  // Verrou immédiat : empêche un double appui de créer deux fiches identiques.
+  if (isSavingRecord) return;
+  isSavingRecord = true;
+  $("saveBtn").disabled = true;
+
   if (ocrEditOpen) saveOcrEdit();
   const orderNo = $("orderNo").value.trim(), frameNo = $("frameNo").value.trim();
   if (!orderNo) { status("formStatus", "Le numéro de commande est obligatoire.", true); $("orderNo").focus(); return; }
@@ -996,7 +1006,12 @@ $("saveBtn").addEventListener("click", async () => {
     // La fiche enregistrée reste dans l'historique et dans la synchronisation cloud.
     resetForm();
     status("formStatus", "Fiche enregistrée avec succès. Tu peux encoder une nouvelle fiche.");
-  } catch (e) { status("formStatus", "Erreur d’enregistrement : " + e.message, true); }
+  } catch (e) {
+    status("formStatus", "Erreur d’enregistrement : " + e.message, true);
+  } finally {
+    isSavingRecord = false;
+    $("saveBtn").disabled = false;
+  }
 });
 $("resetBtn").addEventListener("click", () => { if (confirm("Effacer le formulaire et préparer une nouvelle fiche ?")) resetForm(); });
 $("searchBox").addEventListener("input", refreshRecords);
