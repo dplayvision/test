@@ -108,6 +108,8 @@ async function cloudSyncAll() {
       orderNo: String(rec.orderNo || ""),
       frameNo: String(rec.frameNo || ""),
       operations: Array.isArray(rec.operations) ? rec.operations : [],
+      horizontalTraverses: Number(rec.horizontalTraverses || 0) || null,
+      deductionLateralType: rec.deductionLateralType || null,
       notes: String(rec.notes || ""),
       ocrText: String(rec.ocrText || ""),
       photo: photo || null,
@@ -153,6 +155,8 @@ async function cloudSyncAll() {
       orderNo: String(data.orderNo || ""),
       frameNo: String(data.frameNo || ""),
       operations: Array.isArray(data.operations) ? data.operations : [],
+      horizontalTraverses: Number(data.horizontalTraverses || 0) || null,
+      deductionLateralType: data.deductionLateralType || null,
       notes: String(data.notes || ""),
       ocrText: String(data.ocrText || ""),
       // Ne pas remplacer une photo locale par une valeur vide provenant du cloud.
@@ -236,6 +240,8 @@ async function startCloudServices(user) {
             orderNo: String(data.orderNo || ""),
             frameNo: String(data.frameNo || ""),
             operations: Array.isArray(data.operations) ? data.operations : [],
+            horizontalTraverses: Number(data.horizontalTraverses || 0) || null,
+            deductionLateralType: data.deductionLateralType || null,
             notes: String(data.notes || ""),
             ocrText: String(data.ocrText || ""),
             photo: data.photo || existing?.photo || null,
@@ -317,8 +323,28 @@ function deleteRecord(id) {
 function getOps() {
   return [...document.querySelectorAll('#operations input[type="checkbox"]:checked')].map(el => el.value);
 }
-function setOps(values) {
+function updateOperationOptionsVisibility() {
+  const horizontal = $("horizontalTraverseCheck")?.checked;
+  const deduction = $("deductionLateralCheck")?.checked;
+  $("horizontalTraverseOptions").hidden = !horizontal;
+  $("deductionLateralOptions").hidden = !deduction;
+}
+function getOperationLabels(record) {
+  const labels = (record.operations || []).filter(op => op !== "Traverse horizontale" && op !== "Déduction fixe latéral");
+  if (record.operations?.includes("Traverse horizontale")) {
+    const count = Number(record.horizontalTraverses || 1);
+    labels.push(`Traverse horizontale (${count} ${count > 1 ? "traverses" : "traverse"})`);
+  }
+  if (record.operations?.includes("Déduction fixe latéral")) {
+    labels.push(`Déduction fixe latéral - ${record.deductionLateralType || "Joint bas"}`);
+  }
+  return labels;
+}
+function setOps(values, record = {}) {
   document.querySelectorAll('#operations input[type="checkbox"]').forEach(el => el.checked = values.includes(el.value));
+  if ($("horizontalTraverseCount")) $("horizontalTraverseCount").value = String(record.horizontalTraverses || 1);
+  if ($("deductionLateralType")) $("deductionLateralType").value = record.deductionLateralType || "Joint bas";
+  updateOperationOptionsVisibility();
 }
 function dataURL(file) {
   return new Promise((resolve, reject) => {
@@ -358,7 +384,7 @@ function resetForm() {
   editingId = null; setPhoto(null); originalLabelPhoto = null; originalLabelPhotoType = "image/jpeg"; currentOCRText = "";
   $("cameraInput").value = "";
   $("clientName").value = ""; $("orderNo").value = ""; $("frameNo").value = ""; $("notes").value = "";
-  setOps([]); $("saveBtn").textContent = "💾 Enregistrer la fiche";
+  setOps([]); $("horizontalTraverseCount").value = "1"; $("deductionLateralType").value = "Joint bas"; $("saveBtn").textContent = "💾 Enregistrer la fiche";
   setOcrText(""); $("ocrEditor").value = ""; closeOcrEditor();
   status("formStatus", ""); status("scanStatus", "");
 }
@@ -368,7 +394,7 @@ function loadForm(record) {
   $("frameNo").value = record.frameNo || ""; $("notes").value = record.notes || "";
   setOcrText(record.ocrText || "");
   $("ocrEditor").value = ""; closeOcrEditor();
-  setOps(record.operations || []); $("cameraInput").value = "";
+  setOps(record.operations || [], record); $("cameraInput").value = "";
   $("saveBtn").textContent = "💾 Mettre à jour la fiche";
   status("formStatus", "Fiche chargée. Les modifications seront enregistrées sur cette fiche.");
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -382,8 +408,9 @@ function renderRecord(record) {
   article.className = "record record-compact";
   const timestamp = record.updatedAt || record.createdAt;
   const date = timestamp ? new Date(timestamp).toLocaleDateString("fr-BE", { day: "2-digit", month: "2-digit", year: "2-digit" }) : "—";
-  const ops = (record.operations || []).map(op => `<span class="badge">${escapeHTML(op)}</span>`).join(" ");
-  const opsText = (record.operations || []).join(", ") || "—";
+  const operationLabels = getOperationLabels(record);
+  const ops = operationLabels.map(op => `<span class="badge">${escapeHTML(op)}</span>`).join(" ");
+  const opsText = operationLabels.join(", ") || "—";
   const notes = String(record.notes || "").trim();
   const summaryLine = `${date} • ${record.orderNo || "—"} • ${record.frameNo || "—"} • ${opsText}`;
   article.innerHTML = `
@@ -971,8 +998,8 @@ $("saveBtn").addEventListener("click", async () => {
 
   if (ocrEditOpen) saveOcrEdit();
   const orderNo = $("orderNo").value.trim(), frameNo = $("frameNo").value.trim();
-  if (!orderNo) { status("formStatus", "Le numéro de commande est obligatoire.", true); $("orderNo").focus(); return; }
-  if (!frameNo) { status("formStatus", "Le numéro du châssis est obligatoire.", true); $("frameNo").focus(); return; }
+  if (!orderNo) { status("formStatus", "Le numéro de commande est obligatoire.", true); $("orderNo").focus(); isSavingRecord = false; $("saveBtn").disabled = false; return; }
+  if (!frameNo) { status("formStatus", "Le numéro du châssis est obligatoire.", true); $("frameNo").focus(); isSavingRecord = false; $("saveBtn").disabled = false; return; }
   const now = Date.now();
   try {
     const displayedRaw = $("ocrResult").textContent.trim();
@@ -987,7 +1014,10 @@ $("saveBtn").addEventListener("click", async () => {
     const ocrText = isInstruction ? "" : displayedRaw;
     const record = {
       clientName: $("clientName").value.trim(), orderNo, frameNo,
-      operations: getOps(), notes: $("notes").value.trim(), ocrText,
+      operations: getOps(),
+      horizontalTraverses: $("horizontalTraverseCheck").checked ? Number($("horizontalTraverseCount").value || 1) : null,
+      deductionLateralType: $("deductionLateralCheck").checked ? $("deductionLateralType").value : null,
+      notes: $("notes").value.trim(), ocrText,
       photo: currentPhoto || originalLabelPhoto,
       photoType: currentPhoto ? currentPhotoType : (originalLabelPhotoType || currentPhotoType),
       updatedAt: now
@@ -1013,6 +1043,9 @@ $("saveBtn").addEventListener("click", async () => {
     $("saveBtn").disabled = false;
   }
 });
+$("horizontalTraverseCheck").addEventListener("change", updateOperationOptionsVisibility);
+$("deductionLateralCheck").addEventListener("change", updateOperationOptionsVisibility);
+updateOperationOptionsVisibility();
 $("resetBtn").addEventListener("click", () => { if (confirm("Effacer le formulaire et préparer une nouvelle fiche ?")) resetForm(); });
 $("searchBox").addEventListener("input", refreshRecords);
 $("exportBtn").addEventListener("click", async () => {
@@ -1038,7 +1071,10 @@ $("importInput").addEventListener("change", async e => {
       if (existing.some(r => r.orderNo === item.orderNo && r.frameNo === item.frameNo && JSON.stringify(r.operations || []) === JSON.stringify(item.operations || []))) { skipped++; continue; }
       await saveRecord({
         clientName: String(item.clientName || ""), orderNo: String(item.orderNo), frameNo: String(item.frameNo),
-        operations: OPS.filter(op => (item.operations || []).includes(op)), notes: String(item.notes || ""),
+        operations: [...OPS, "Traverse horizontale", "Déduction fixe latéral"].filter(op => (item.operations || []).includes(op)),
+        horizontalTraverses: Number(item.horizontalTraverses || 0) || null,
+        deductionLateralType: item.deductionLateralType || null,
+        notes: String(item.notes || ""),
         ocrText: String(item.ocrText || ""), photo: item.photo || null, photoType: item.photoType || "image/jpeg",
         createdAt: Number(item.createdAt) || Date.now(), updatedAt: Number(item.updatedAt) || Date.now()
       });
@@ -1134,7 +1170,8 @@ async function generateSummary() {
       const timestamp = getRecordDate(record);
       if (!timestamp || timestamp < start || timestamp > end) continue;
       const date = new Date(timestamp).toLocaleDateString('fr-BE');
-      const operations = (record.operations && record.operations.length) ? record.operations : [''];
+      const labels = getOperationLabels(record);
+      const operations = labels.length ? labels : [''];
       for (const operation of operations) {
         const row = { date, timestamp, clientName: String(record.clientName || ''), orderNo: String(record.orderNo || ''), frameNo: String(record.frameNo || ''), operation: String(operation || ''), notes: String(record.notes || '') };
         const key = summaryKey(row);
