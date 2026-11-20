@@ -1515,6 +1515,15 @@ function durationLabel(milliseconds) {
   const minutes = Math.max(0, Math.floor(milliseconds / 60000));
   return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2,"0")}`;
 }
+// Calcule la durée selon les minutes réellement affichées dans le tableau.
+// Exemple : 20:56 à 20:58 = 2 minutes, même si les secondes exactes
+// donnent une durée réelle légèrement inférieure à 2 minutes.
+function welderSessionDurationMs(session, now = Date.now()) {
+  const end = session.endedAt || now;
+  const startMinute = Math.floor(Number(session.startedAt) / 60000);
+  const endMinute = Math.floor(Number(end) / 60000);
+  return Math.max(0, endMinute - startMinute) * 60000;
+}
 function escapeWelderText(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
@@ -1562,13 +1571,13 @@ async function refreshWelderView() {
   const totals = new Map();
   for (const session of filtered) {
     const key = localDateKey(session.startedAt);
-    const duration = (session.endedAt || Date.now()) - session.startedAt;
-    totals.set(key, (totals.get(key) || 0) + Math.max(0, duration));
+    const duration = welderSessionDurationMs(session);
+    totals.set(key, (totals.get(key) || 0) + duration);
   }
-  const totalMs = filtered.reduce((sum, session) => sum + Math.max(0, (session.endedAt || Date.now()) - session.startedAt), 0);
+  const totalMs = filtered.reduce((sum, session) => sum + welderSessionDurationMs(session), 0);
 
   const rows = filtered.map(session => {
-    const duration = (session.endedAt || Date.now()) - session.startedAt;
+    const duration = welderSessionDurationMs(session);
     return `<tr>
       <td>${escapeWelderText(formatWelderDate(session.startedAt))}</td>
       <td>${formatWelderTime(session.startedAt)}</td>
@@ -1675,7 +1684,7 @@ if ($("welderLeaveBtn")) $("welderLeaveBtn").addEventListener("click", async () 
     active.endedAt = Date.now();
     await saveWelderSession(active);
     await refreshWelderView();
-    status("welderStatus", `Départ enregistré. Durée : ${durationLabel(active.endedAt - active.startedAt)}.`);
+    status("welderStatus", `Départ enregistré. Durée : ${durationLabel(welderSessionDurationMs(active))}.`);
   } catch (error) {
     status("welderStatus", "Impossible d’enregistrer le départ : " + error.message, true);
   }
