@@ -524,13 +524,29 @@ async function refreshRecords() {
       heading.textContent =
         `Commande ${first.orderNo || "—"} • Châssis ${first.frameNo || "—"}`;
 
+      // Afficher aussi les dates directement dans l'en-tête du groupe.
+      // Si plusieurs fiches du groupe ont des dates différentes, elles sont toutes indiquées.
+      const dates = [...new Set(groupRecords.map(record => {
+        const timestamp = record.updatedAt || record.createdAt;
+        return timestamp
+          ? new Date(timestamp).toLocaleDateString("fr-BE", {
+              day: "2-digit", month: "2-digit", year: "numeric"
+            })
+          : "Date inconnue";
+      }))];
+
+      const dateLine = document.createElement("div");
+      dateLine.textContent = `Date${dates.length > 1 ? "s" : ""} : ${dates.join(" • ")}`;
+      dateLine.style.cssText =
+        "font-size:13px;font-weight:700;color:#334155;margin-top:6px;";
+
       const count = document.createElement("div");
       count.textContent =
         `${groupRecords.length} fiche${groupRecords.length > 1 ? "s" : ""} dans ce groupe`;
       count.style.cssText =
-        "font-size:12px;font-weight:600;color:#475569;margin-top:5px;";
+        "font-size:12px;font-weight:600;color:#475569;margin-top:4px;";
 
-      summary.append(heading, count);
+      summary.append(heading, dateLine, count);
       groupDetails.appendChild(summary);
 
       const groupContent = document.createElement("div");
