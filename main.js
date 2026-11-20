@@ -1518,6 +1518,15 @@ function durationLabel(milliseconds) {
 function escapeWelderText(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
+function toWelderDateTimeLocal(timestamp) {
+  const d = new Date(timestamp);
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function fromWelderDateTimeLocal(value) {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
 async function refreshWelderView() {
   const target = $("welderSummary");
   if (!target || !db) return;
@@ -1565,6 +1574,10 @@ async function refreshWelderView() {
       <td>${formatWelderTime(session.startedAt)}</td>
       <td>${session.endedAt ? formatWelderTime(session.endedAt) : '<strong style="color:#15803d">En cours</strong>'}</td>
       <td><strong>${durationLabel(duration)}</strong></td>
+      <td style="white-space:nowrap">
+        <button type="button" class="secondary welder-edit" data-id="${session.id}" style="padding:7px 9px;min-height:34px;font-size:12px">✏️ Modifier</button>
+        <button type="button" class="danger welder-delete" data-id="${session.id}" style="padding:7px 9px;min-height:34px;font-size:12px">🗑️ Supprimer</button>
+      </td>
     </tr>`;
   }).join("");
 
@@ -1577,7 +1590,7 @@ async function refreshWelderView() {
     <div class="field"><strong>Total sur la période :</strong> ${durationLabel(totalMs)} • ${filtered.length} passage(s)</div>
     <h3 style="margin:16px 0 8px">Détail des passages</h3>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Arrivée</th><th style="padding:9px;text-align:left">Départ</th><th style="padding:9px;text-align:left">Durée</th></tr></thead>
+      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Arrivée</th><th style="padding:9px;text-align:left">Départ</th><th style="padding:9px;text-align:left">Durée</th><th style="padding:9px;text-align:left">Actions</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     <h3 style="margin:16px 0 8px">Synthèse par jour</h3>
@@ -1585,6 +1598,57 @@ async function refreshWelderView() {
       <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Jour</th><th style="padding:9px;text-align:left">Temps total</th></tr></thead>
       <tbody>${dailyRows}</tbody>
     </table></div>`;
+
+  target.querySelectorAll(".welder-edit").forEach(button => {
+    button.addEventListener("click", async () => {
+      const id = Number(button.dataset.id);
+      const session = (await allWelderSessions()).find(item => item.id === id);
+      if (!session) return;
+      const startValue = prompt("Modifier la date et l’heure d’arrivée (AAAA-MM-JJTHH:MM) :", toWelderDateTimeLocal(session.startedAt));
+      if (startValue === null) return;
+      const newStart = fromWelderDateTimeLocal(startValue);
+      if (newStart === null) {
+        alert("Date ou heure d’arrivée invalide.");
+        return;
+      }
+
+      let newEnd = null;
+      if (session.endedAt) {
+        const endValue = prompt("Modifier la date et l’heure de départ (AAAA-MM-JJTHH:MM) :", toWelderDateTimeLocal(session.endedAt));
+        if (endValue === null) return;
+        newEnd = fromWelderDateTimeLocal(endValue);
+        if (newEnd === null || newEnd <= newStart) {
+          alert("Le départ doit être valide et après l’arrivée.");
+          return;
+        }
+      }
+
+      // Un passage en cours reste sans heure de départ.
+      session.startedAt = newStart;
+      session.endedAt = newEnd;
+      await saveWelderSession(session);
+      await refreshWelderView();
+      status("welderStatus", "Passage modifié avec succès.");
+    });
+  });
+
+  target.querySelectorAll(".welder-delete").forEach(button => {
+    button.addEventListener("click", async () => {
+      const id = Number(button.dataset.id);
+      if (!confirm("Supprimer définitivement ce passage à la soudeuse ?")) return;
+      try {
+        await new Promise((resolve, reject) => {
+          const req = db.transaction(WELDER_STORE, "readwrite").objectStore(WELDER_STORE).delete(id);
+          req.onsuccess = resolve;
+          req.onerror = () => reject(req.error);
+        });
+        await refreshWelderView();
+        status("welderStatus", "Passage supprimé.");
+      } catch (error) {
+        status("welderStatus", "Impossible de supprimer le passage : " + error.message, true);
+      }
+    });
+  });
 }
 if ($("welderArriveBtn")) $("welderArriveBtn").addEventListener("click", async () => {
   try {
