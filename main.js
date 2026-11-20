@@ -6,7 +6,7 @@ import { getFirestore, collection, doc, getDocs, setDoc, deleteDoc, serverTimest
 (() => {
 "use strict";
 
-const DB_NAME = "scanChassisDB", DB_VERSION = 1, STORE = "fiches";
+const DB_NAME = "scanChassisDB", DB_VERSION = 2, STORE = "fiches", WELDER_STORE = "welderSessions";
 const OPS = ["Empilage","Double empilage","Retour","Double retour","Soudage / Nettoyage ouvrants","Soudage / Nettoyage dormants"];
 const OCR_PLACEHOLDER = "Le texte reconnu apparaîtra ici.";
 
@@ -302,6 +302,9 @@ function openDB() {
         store.createIndex("orderNo", "orderNo", { unique: false });
         store.createIndex("frameNo", "frameNo", { unique: false });
       }
+      if (!database.objectStoreNames.contains(WELDER_STORE)) {
+        database.createObjectStore(WELDER_STORE, { keyPath: "id", autoIncrement: true });
+      }
     };
     request.onsuccess = () => { db = request.result; resolve(db); };
     request.onerror = () => reject(request.error);
@@ -332,6 +335,22 @@ function deleteRecord(id) {
   return new Promise((resolve, reject) => {
     const req = db.transaction(STORE, "readwrite").objectStore(STORE).delete(id);
     req.onsuccess = resolve;
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Suivi des passages à la soudeuse : stockage local séparé des fiches châssis.
+function allWelderSessions() {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(WELDER_STORE, "readonly").objectStore(WELDER_STORE).getAll();
+    req.onsuccess = () => resolve(req.result.sort((a, b) => b.startedAt - a.startedAt));
+    req.onerror = () => reject(req.error);
+  });
+}
+function saveWelderSession(session) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(WELDER_STORE, "readwrite").objectStore(WELDER_STORE)[session.id ? "put" : "add"](session);
+    req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
@@ -520,7 +539,11 @@ async function refreshRecords() {
       summary.style.cssText =
         "padding:14px;background:#e8efff;color:#172033;font-weight:800;cursor:pointer;";
 
-      // Dates affichées sur la même ligne, avant la commande et le châssis.
+      const heading = document.createElement("div");
+      heading.textContent =
+        `Commande ${first.orderNo || "—"} • Châssis ${first.frameNo || "—"}`;
+
+      // Afficher aussi les dates directement dans l'en-tête du groupe.
       // Si plusieurs fiches du groupe ont des dates différentes, elles sont toutes indiquées.
       const dates = [...new Set(groupRecords.map(record => {
         const timestamp = record.updatedAt || record.createdAt;
@@ -531,9 +554,10 @@ async function refreshRecords() {
           : "Date inconnue";
       }))];
 
-      const heading = document.createElement("div");
-      heading.textContent =
-        `${dates.join(" / ")} • Commande ${first.orderNo || "—"} • Châssis ${first.frameNo || "—"}`;
+      const dateLine = document.createElement("div");
+      dateLine.textContent = `Date${dates.length > 1 ? "s" : ""} : ${dates.join(" • ")}`;
+      dateLine.style.cssText =
+        "font-size:13px;font-weight:700;color:#334155;margin-top:6px;";
 
       const count = document.createElement("div");
       count.textContent =
@@ -541,7 +565,7 @@ async function refreshRecords() {
       count.style.cssText =
         "font-size:12px;font-weight:600;color:#475569;margin-top:4px;";
 
-      summary.append(heading, count);
+      summary.append(heading, dateLine, count);
       groupDetails.appendChild(summary);
 
       const groupContent = document.createElement("div");
@@ -1153,7 +1177,8 @@ $("searchBox").addEventListener("input", refreshRecords);
 $("exportBtn").addEventListener("click", async () => {
   try {
     const records = await allRecords();
-    const blob = new Blob([JSON.stringify({ app: "Scan Châssis", version: 1, exportedAt: new Date().toISOString(), records })], { type: "application/json" });
+    const welderSessions = await allWelderSessions();
+    const blob = new Blob([JSON.stringify({ app: "Scan Châssis", version: 2, exportedAt: new Date().toISOString(), records, welderSessions })], { type: "application/json" });
     const url = URL.createObjectURL(blob), a = document.createElement("a");
     a.href = url; a.download = `scan-chassis-sauvegarde-${new Date().toISOString().slice(0,10)}.json`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
@@ -1186,9 +1211,26 @@ $("importInput").addEventListener("change", async e => {
       });
       added++;
     }
+    let sessionsAdded = 0;
+    if (Array.isArray(parsed.welderSessions)) {
+      const existingSessions = await allWelderSessions();
+      const knownSessionIds = new Set(existingSessions.map(session => String(session.backupId || session.id)));
+      for (const session of parsed.welderSessions) {
+        const backupId = String(session.backupId || session.id || "");
+        if (!Number(session.startedAt) || (backupId && knownSessionIds.has(backupId))) continue;
+        await saveWelderSession({
+          startedAt: Number(session.startedAt),
+          endedAt: session.endedAt ? Number(session.endedAt) : null,
+          backupId: backupId || undefined
+        });
+        if (backupId) knownSessionIds.add(backupId);
+        sessionsAdded++;
+      }
+    }
     await refreshRecords();
+    await refreshWelderView();
     scheduleAutomaticSync();
-    status("backupStatus", `Import terminé : ${added} ajoutée(s), ${skipped} ignorée(s).`);
+    status("backupStatus", `Import terminé : ${added} fiche(s) ajoutée(s), ${skipped} ignorée(s), ${sessionsAdded} passage(s) soudeuse importé(s).`);
   } catch (err) { status("backupStatus", "Import impossible : " + err.message, true); }
   finally { e.target.value = ""; }
 });
@@ -1457,7 +1499,136 @@ onAuthStateChanged(auth, user => {
   }
 });
 
+
+// ==================== SUIVI SOUDEUSE ====================
+function formatWelderTime(timestamp) {
+  return new Date(timestamp).toLocaleTimeString("fr-BE", { hour: "2-digit", minute: "2-digit" });
+}
+function formatWelderDate(timestamp) {
+  return new Date(timestamp).toLocaleDateString("fr-BE", { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" });
+}
+function localDateKey(timestamp) {
+  const d = new Date(timestamp);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function durationLabel(milliseconds) {
+  const minutes = Math.max(0, Math.floor(milliseconds / 60000));
+  return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2,"0")}`;
+}
+function escapeWelderText(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+async function refreshWelderView() {
+  const target = $("welderSummary");
+  if (!target || !db) return;
+  const sessions = await allWelderSessions();
+  const active = sessions.find(session => !session.endedAt);
+  const arriveBtn = $("welderArriveBtn"), leaveBtn = $("welderLeaveBtn");
+  if (arriveBtn) arriveBtn.disabled = !!active;
+  if (leaveBtn) leaveBtn.disabled = !active;
+  const currentStatus = $("welderCurrentStatus");
+  if (currentStatus) {
+    currentStatus.textContent = active
+      ? `À la soudeuse depuis ${formatWelderDate(active.startedAt)} à ${formatWelderTime(active.startedAt)}.`
+      : "Aucun passage en cours.";
+  }
+
+  const from = $("welderStartDate")?.value || "";
+  const to = $("welderEndDate")?.value || "";
+  const search = ($("welderSearch")?.value || "").trim().toLocaleLowerCase("fr");
+  const fromMs = from ? new Date(from + "T00:00:00").getTime() : 0;
+  const toMs = to ? new Date(to + "T23:59:59.999").getTime() : Infinity;
+  const filtered = sessions.filter(session => {
+    const end = session.endedAt || Date.now();
+    const dateText = formatWelderDate(session.startedAt).toLocaleLowerCase("fr");
+    const text = `${dateText} ${formatWelderTime(session.startedAt)} ${session.endedAt ? formatWelderTime(session.endedAt) : "en cours"}`.toLocaleLowerCase("fr");
+    return session.startedAt >= fromMs && session.startedAt <= toMs && (!search || text.includes(search));
+  });
+
+  if (!filtered.length) {
+    target.innerHTML = '<div class="empty">Aucun passage trouvé pour cette période.</div>';
+    return;
+  }
+
+  const totals = new Map();
+  for (const session of filtered) {
+    const key = localDateKey(session.startedAt);
+    const duration = (session.endedAt || Date.now()) - session.startedAt;
+    totals.set(key, (totals.get(key) || 0) + Math.max(0, duration));
+  }
+  const totalMs = filtered.reduce((sum, session) => sum + Math.max(0, (session.endedAt || Date.now()) - session.startedAt), 0);
+
+  const rows = filtered.map(session => {
+    const duration = (session.endedAt || Date.now()) - session.startedAt;
+    return `<tr>
+      <td>${escapeWelderText(formatWelderDate(session.startedAt))}</td>
+      <td>${formatWelderTime(session.startedAt)}</td>
+      <td>${session.endedAt ? formatWelderTime(session.endedAt) : '<strong style="color:#15803d">En cours</strong>'}</td>
+      <td><strong>${durationLabel(duration)}</strong></td>
+    </tr>`;
+  }).join("");
+
+  const dailyRows = [...totals.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([date, ms]) => {
+    const d = new Date(date + "T12:00:00").toLocaleDateString("fr-BE");
+    return `<tr><td>${d}</td><td><strong>${durationLabel(ms)}</strong></td></tr>`;
+  }).join("");
+
+  target.innerHTML = `
+    <div class="field"><strong>Total sur la période :</strong> ${durationLabel(totalMs)} • ${filtered.length} passage(s)</div>
+    <h3 style="margin:16px 0 8px">Détail des passages</h3>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Arrivée</th><th style="padding:9px;text-align:left">Départ</th><th style="padding:9px;text-align:left">Durée</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <h3 style="margin:16px 0 8px">Synthèse par jour</h3>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Jour</th><th style="padding:9px;text-align:left">Temps total</th></tr></thead>
+      <tbody>${dailyRows}</tbody>
+    </table></div>`;
+}
+if ($("welderArriveBtn")) $("welderArriveBtn").addEventListener("click", async () => {
+  try {
+    const sessions = await allWelderSessions();
+    if (sessions.some(session => !session.endedAt)) {
+      status("welderStatus", "Un passage est déjà en cours. Enregistre d’abord le départ.", true);
+      return;
+    }
+    await saveWelderSession({ startedAt: Date.now(), endedAt: null });
+    await refreshWelderView();
+    status("welderStatus", "Arrivée à la soudeuse enregistrée automatiquement.");
+  } catch (error) {
+    status("welderStatus", "Impossible d’enregistrer l’arrivée : " + error.message, true);
+  }
+});
+if ($("welderLeaveBtn")) $("welderLeaveBtn").addEventListener("click", async () => {
+  try {
+    const sessions = await allWelderSessions();
+    const active = sessions.find(session => !session.endedAt);
+    if (!active) {
+      status("welderStatus", "Aucun passage à clôturer.", true);
+      return;
+    }
+    active.endedAt = Date.now();
+    await saveWelderSession(active);
+    await refreshWelderView();
+    status("welderStatus", `Départ enregistré. Durée : ${durationLabel(active.endedAt - active.startedAt)}.`);
+  } catch (error) {
+    status("welderStatus", "Impossible d’enregistrer le départ : " + error.message, true);
+  }
+});
+if ($("welderFilterBtn")) $("welderFilterBtn").addEventListener("click", refreshWelderView);
+if ($("welderSearch")) $("welderSearch").addEventListener("input", refreshWelderView);
+if ($("welderTodayBtn")) $("welderTodayBtn").addEventListener("click", () => {
+  const todayValue = dateInputValue(new Date());
+  $("welderStartDate").value = todayValue;
+  $("welderEndDate").value = todayValue;
+  $("welderSearch").value = "";
+  refreshWelderView();
+});
+
 const today = dateInputValue(new Date());
+if ($("welderStartDate")) $("welderStartDate").value = today;
+if ($("welderEndDate")) $("welderEndDate").value = today;
 if ($('summaryStart')) $('summaryStart').value = today;
 if ($('summaryEnd')) $('summaryEnd').value = today;
 
@@ -1465,6 +1636,7 @@ if ($('summaryEnd')) $('summaryEnd').value = today;
   try {
     await openDB();
     await refreshRecords();
+    await refreshWelderView();
     if (cloudUser) await startCloudServices(cloudUser);
   } catch (e) {
     status("formStatus", "Impossible d’ouvrir la base locale : " + e.message, true);
