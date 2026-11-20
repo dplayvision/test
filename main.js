@@ -462,16 +462,92 @@ function renderRecord(record) {
 async function refreshRecords() {
   const container = $("records");
   try {
-    const records = await allRecords(), query = $("searchBox").value.trim().toLocaleLowerCase("fr");
-    const filtered = records.filter(r => [r.clientName, r.orderNo, r.frameNo, r.ocrText, ...(r.operations || [])].some(v => String(v || "").toLocaleLowerCase("fr").includes(query)));
+    const records = await allRecords();
+    const query = $("searchBox").value.trim().toLocaleLowerCase("fr");
+
+    // La recherche filtre les fiches, sans modifier ni fusionner les données.
+    const filtered = records.filter(record =>
+      [
+        record.clientName,
+        record.orderNo,
+        record.frameNo,
+        record.ocrText,
+        ...(record.operations || [])
+      ].some(value =>
+        String(value || "").toLocaleLowerCase("fr").includes(query)
+      )
+    );
+
     container.replaceChildren();
+
     if (!filtered.length) {
-      const empty = document.createElement("div"); empty.className = "empty";
-      empty.textContent = records.length ? "Aucun résultat pour cette recherche." : "Aucune fiche enregistrée pour le moment.";
-      container.appendChild(empty); return;
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = records.length
+        ? "Aucun résultat pour cette recherche."
+        : "Aucune fiche enregistrée pour le moment.";
+      container.appendChild(empty);
+      return;
     }
-    filtered.forEach(record => container.appendChild(renderRecord(record)));
-  } catch (e) { container.textContent = "Erreur de lecture : " + e.message; }
+
+    // Un groupe correspond à une même commande ET à un même numéro de châssis.
+    // Le client, la photo et les opérations ne servent pas à créer les groupes.
+    const groups = new Map();
+
+    for (const record of filtered) {
+      const orderKey = String(record.orderNo || "").trim().toLocaleUpperCase("fr");
+      const frameKey = String(record.frameNo || "").trim().toLocaleUpperCase("fr");
+      const groupKey = `${orderKey}\u001f${frameKey}`;
+
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey).push(record);
+    }
+
+    // Chaque fiche reste indépendante à l'intérieur de son groupe :
+    // sa photo, ses opérations, ses remarques et ses boutons restent propres.
+    for (const groupRecords of groups.values()) {
+      const first = groupRecords[0];
+      const group = document.createElement("section");
+      group.className = "record-group";
+      group.style.cssText =
+        "margin-bottom:14px;border:1px solid #cbd5e1;border-radius:12px;overflow:hidden;background:#fff;";
+
+      const groupDetails = document.createElement("details");
+      groupDetails.className = "record-group-details";
+
+      const summary = document.createElement("summary");
+      summary.className = "record-group-summary";
+      summary.style.cssText =
+        "padding:14px;background:#e8efff;color:#172033;font-weight:800;cursor:pointer;";
+
+      const heading = document.createElement("div");
+      heading.textContent =
+        `Commande ${first.orderNo || "—"} • Châssis ${first.frameNo || "—"}`;
+
+      const count = document.createElement("div");
+      count.textContent =
+        `${groupRecords.length} fiche${groupRecords.length > 1 ? "s" : ""} dans ce groupe`;
+      count.style.cssText =
+        "font-size:12px;font-weight:600;color:#475569;margin-top:5px;";
+
+      summary.append(heading, count);
+      groupDetails.appendChild(summary);
+
+      const groupContent = document.createElement("div");
+      groupContent.className = "record-group-content";
+      groupContent.style.cssText = "padding:8px;";
+
+      for (const record of groupRecords) {
+        groupContent.appendChild(renderRecord(record));
+      }
+
+      groupDetails.appendChild(groupContent);
+      group.appendChild(groupDetails);
+      container.appendChild(group);
+    }
+  } catch (e) {
+    container.textContent = "Erreur de lecture : " + e.message;
+  }
 }
 function stopCamera() {
   if (liveStream) liveStream.getTracks().forEach(track => track.stop());
