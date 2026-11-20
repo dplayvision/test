@@ -520,11 +520,7 @@ async function refreshRecords() {
       summary.style.cssText =
         "padding:14px;background:#e8efff;color:#172033;font-weight:800;cursor:pointer;";
 
-      const heading = document.createElement("div");
-      heading.textContent =
-        `Commande ${first.orderNo || "—"} • Châssis ${first.frameNo || "—"}`;
-
-      // Afficher aussi les dates directement dans l'en-tête du groupe.
+      // Dates affichées sur la même ligne, avant la commande et le châssis.
       // Si plusieurs fiches du groupe ont des dates différentes, elles sont toutes indiquées.
       const dates = [...new Set(groupRecords.map(record => {
         const timestamp = record.updatedAt || record.createdAt;
@@ -535,10 +531,9 @@ async function refreshRecords() {
           : "Date inconnue";
       }))];
 
-      const dateLine = document.createElement("div");
-      dateLine.textContent = `Date${dates.length > 1 ? "s" : ""} : ${dates.join(" • ")}`;
-      dateLine.style.cssText =
-        "font-size:13px;font-weight:700;color:#334155;margin-top:6px;";
+      const heading = document.createElement("div");
+      heading.textContent =
+        `${dates.join(" / ")} • Commande ${first.orderNo || "—"} • Châssis ${first.frameNo || "—"}`;
 
       const count = document.createElement("div");
       count.textContent =
@@ -546,7 +541,7 @@ async function refreshRecords() {
       count.style.cssText =
         "font-size:12px;font-weight:600;color:#475569;margin-top:4px;";
 
-      summary.append(heading, dateLine, count);
+      summary.append(heading, count);
       groupDetails.appendChild(summary);
 
       const groupContent = document.createElement("div");
