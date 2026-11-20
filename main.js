@@ -444,6 +444,48 @@ function renderRecord(record) {
   });
   return article;
 }
+// Regroupe visuellement les fiches ayant exactement le même numéro de commande
+// et le même numéro de châssis. Les fiches restent indépendantes dans IndexedDB
+// et dans Firebase : aucune fusion, suppression ou écrasement n'est effectué.
+function normalizeGroupNumber(value) {
+  return String(value || "").normalize("NFKC").toLocaleUpperCase("fr").replace(/[\s\-_.]/g, "");
+}
+function recordGroupKey(record) {
+  const order = normalizeGroupNumber(record.orderNo);
+  const frame = normalizeGroupNumber(record.frameNo);
+  return order && frame ? `${order}\u001f${frame}` : `record-${record.id}`;
+}
+function groupRecords(records) {
+  const groups = new Map();
+  for (const record of records) {
+    const key = recordGroupKey(record);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(record);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(b[0].updatedAt || b[0].createdAt || 0) - Number(a[0].updatedAt || a[0].createdAt || 0)
+  );
+}
+function renderRecordGroup(group) {
+  if (group.length === 1) return renderRecord(group[0]);
+
+  const wrapper = document.createElement("section");
+  wrapper.className = "record-group";
+  wrapper.style.cssText = "border:2px solid #2563eb;border-radius:12px;padding:12px;margin:12px 0;background:#f8fbff";
+
+  const heading = document.createElement("div");
+  heading.style.cssText = "font-weight:800;color:#172033;margin:0 0 10px;font-size:15px;line-height:1.5";
+  heading.textContent = `📁 Commande ${group[0].orderNo || "—"} • Châssis ${group[0].frameNo || "—"} • ${group.length} fiches regroupées`;
+  wrapper.appendChild(heading);
+
+  const explanation = document.createElement("div");
+  explanation.style.cssText = "font-size:12px;color:#475569;margin:0 0 10px";
+  explanation.textContent = "Même commande et même châssis : chaque fiche et chaque opération reste enregistrée séparément.";
+  wrapper.appendChild(explanation);
+
+  group.forEach(record => wrapper.appendChild(renderRecord(record)));
+  return wrapper;
+}
 async function refreshRecords() {
   const container = $("records");
   try {
@@ -455,7 +497,7 @@ async function refreshRecords() {
       empty.textContent = records.length ? "Aucun résultat pour cette recherche." : "Aucune fiche enregistrée pour le moment.";
       container.appendChild(empty); return;
     }
-    filtered.forEach(record => container.appendChild(renderRecord(record)));
+    groupRecords(filtered).forEach(group => container.appendChild(renderRecordGroup(group)));
   } catch (e) { container.textContent = "Erreur de lecture : " + e.message; }
 }
 function stopCamera() {
