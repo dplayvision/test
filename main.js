@@ -1563,8 +1563,34 @@ async function refreshWelderView() {
     return session.startedAt >= fromMs && session.startedAt <= toMs && (!search || text.includes(search));
   });
 
+  // Le tableau « Pas à la soudeuse » est calculé à partir des passages
+  // de la période sélectionnée, sans modifier le tableau détaillé des actions.
+  const dateFiltered = sessions.filter(session =>
+    session.startedAt >= fromMs && session.startedAt <= toMs
+  );
+  const chronological = [...dateFiltered].sort((a, b) => a.startedAt - b.startedAt);
+  const absenceRows = [];
+  for (let i = 0; i < chronological.length - 1; i++) {
+    const previous = chronological[i];
+    const next = chronological[i + 1];
+    if (!previous.endedAt) continue;
+    // Ne retenir que les pauses entre deux passages du même jour.
+    if (localDateKey(previous.endedAt) !== localDateKey(next.startedAt)) continue;
+    if (next.startedAt <= previous.endedAt) continue;
+    absenceRows.push(`<tr>
+      <td>${formatWelderTime(previous.endedAt)}</td>
+      <td>${formatWelderTime(next.startedAt)}</td>
+    </tr>`);
+  }
+  const absenceTable = `
+    <h3 style="margin:16px 0 8px">Pas à la soudeuse</h3>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Départ de la soudeuse</th><th style="padding:9px;text-align:left">Retour à la soudeuse</th></tr></thead>
+      <tbody>${absenceRows.length ? absenceRows.join("") : '<tr><td colspan="2" style="padding:9px">Aucune période à afficher pour cette date.</td></tr>'}</tbody>
+    </table></div>`;
+
   if (!filtered.length) {
-    target.innerHTML = '<div class="empty">Aucun passage trouvé pour cette période.</div>';
+    target.innerHTML = '<div class="empty">Aucun passage trouvé pour cette période.</div>' + absenceTable;
     return;
   }
 
@@ -1602,6 +1628,7 @@ async function refreshWelderView() {
       <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Arrivée</th><th style="padding:9px;text-align:left">Départ</th><th style="padding:9px;text-align:left">Durée</th><th style="padding:9px;text-align:left">Actions</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
+    ${absenceTable}
     <h3 style="margin:16px 0 8px">Synthèse par jour</h3>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Jour</th><th style="padding:9px;text-align:left">Temps total</th></tr></thead>
