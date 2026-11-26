@@ -1578,6 +1578,7 @@ async function refreshWelderView() {
     if (localDateKey(previous.endedAt) !== localDateKey(next.startedAt)) continue;
     if (next.startedAt <= previous.endedAt) continue;
     absenceRows.push(`<tr>
+      <td>${escapeWelderText(formatWelderDate(previous.endedAt))}</td>
       <td>${formatWelderTime(previous.endedAt)}</td>
       <td>${formatWelderTime(next.startedAt)}</td>
     </tr>`);
@@ -1585,8 +1586,8 @@ async function refreshWelderView() {
   const absenceTable = `
     <h3 style="margin:16px 0 8px">Pas à la soudeuse</h3>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Départ de la soudeuse</th><th style="padding:9px;text-align:left">Retour à la soudeuse</th></tr></thead>
-      <tbody>${absenceRows.length ? absenceRows.join("") : '<tr><td colspan="2" style="padding:9px">Aucune période à afficher pour cette date.</td></tr>'}</tbody>
+      <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Départ de la soudeuse</th><th style="padding:9px;text-align:left">Retour à la soudeuse</th></tr></thead>
+      <tbody>${absenceRows.length ? absenceRows.join("") : '<tr><td colspan="3" style="padding:9px">Aucune période à afficher pour cette date.</td></tr>'}</tbody>
     </table></div>`;
 
   if (!filtered.length) {
@@ -1696,6 +1697,16 @@ function buildWelderSummaryCanvas(sessions, from, to) {
     .filter(session => session.startedAt >= fromMs && session.startedAt <= toMs)
     .sort((a, b) => a.startedAt - b.startedAt);
   const daily = new Map();
+  const chronological = [...filtered].sort((a, b) => a.startedAt - b.startedAt);
+  const absences = [];
+  for (let i = 0; i < chronological.length - 1; i++) {
+    const previous = chronological[i];
+    const next = chronological[i + 1];
+    if (!previous.endedAt) continue;
+    if (localDateKey(previous.endedAt) !== localDateKey(next.startedAt)) continue;
+    if (next.startedAt <= previous.endedAt) continue;
+    absences.push({ date: formatWelderDate(previous.endedAt), departure: formatWelderTime(previous.endedAt), back: formatWelderTime(next.startedAt) });
+  }
   let totalMs = 0;
   for (const session of filtered) {
     const duration = welderSessionDurationMs(session, now);
@@ -1706,7 +1717,8 @@ function buildWelderSummaryCanvas(sessions, from, to) {
 
   const pad = 34, rowH = 38, titleH = 112, dailyH = 42;
   const width = 900;
-  const height = Math.max(360, titleH + 72 + filtered.length * rowH + 64 + daily.size * dailyH + 50);
+  const absenceBlockH = 62 + absences.length * rowH;
+  const height = Math.max(420, titleH + 72 + filtered.length * rowH + absenceBlockH + 64 + daily.size * dailyH + 70);
   const canvas = document.createElement("canvas");
   canvas.width = width * 2;
   canvas.height = height * 2;
@@ -1768,6 +1780,38 @@ function buildWelderSummaryCanvas(sessions, from, to) {
     ctx.beginPath(); ctx.moveTo(pad, y + rowH); ctx.lineTo(width - pad, y + rowH); ctx.stroke();
     y += rowH;
   });
+
+  y += 24;
+  ctx.font = "bold 19px Arial";
+  ctx.fillStyle = "#172033";
+  ctx.fillText("PAS À LA SOUDEUSE", pad, y);
+  y += 14;
+  const absenceCols = [
+    { label: "DATE", x: pad },
+    { label: "DÉPART DE LA SOUDEUSE", x: 300 },
+    { label: "RETOUR À LA SOUDEUSE", x: 570 }
+  ];
+  ctx.fillStyle = "#e8efff";
+  ctx.fillRect(pad, y, width - pad * 2, 32);
+  ctx.font = "bold 12px Arial";
+  ctx.fillStyle = "#172033";
+  absenceCols.forEach(c => ctx.fillText(c.label, c.x, y + 21));
+  y += 32;
+  ctx.font = "14px Arial";
+  if (absences.length) {
+    absences.forEach((absence, index) => {
+      if (index % 2 === 1) { ctx.fillStyle = "#ffffff"; ctx.fillRect(pad, y, width - pad * 2, rowH); }
+      ctx.fillStyle = "#172033";
+      ctx.fillText(absence.date, absenceCols[0].x, y + 24);
+      ctx.fillText(absence.departure, absenceCols[1].x, y + 24);
+      ctx.fillText(absence.back, absenceCols[2].x, y + 24);
+      y += rowH;
+    });
+  } else {
+    ctx.fillStyle = "#65718a";
+    ctx.fillText("Aucune période hors soudeuse enregistrée sur cette période.", pad, y + 24);
+    y += rowH;
+  }
 
   y += 24;
   ctx.font = "bold 19px Arial";
