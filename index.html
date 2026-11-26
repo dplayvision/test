@@ -59,7 +59,7 @@ body { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important;
 <header><div class="eyebrow">Atelier • Suivi de production</div><h1>📷 Scan Châssis</h1><p>Scanne l’étiquette, coche les opérations et retrouve chaque fiche.</p></header>
 <main>
 <section class="card" id="welderCard">
-<h2>4. Suivi du temps à la soudeuse</h2>
+<h2>Suivi du temps à la soudeuse</h2>
 <p class="hint">Appuie sur Arrivée quand tu commences à la soudeuse et sur Départ quand tu quittes ton poste. L’heure est enregistrée automatiquement.</p>
 <div class="grid" style="margin-top:12px">
   <button type="button" class="primary" id="welderArriveBtn">▶️ Arrivée soudeuse</button>
@@ -73,6 +73,7 @@ body { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important;
 <label for="welderSearch">Rechercher dans les passages</label>
 <input id="welderSearch" type="search" placeholder="Date ou heure…">
 <div class="actions"><button type="button" class="secondary" id="welderFilterBtn">🔎 Rechercher / Actualiser</button><button type="button" class="neutral" id="welderTodayBtn">Aujourd’hui</button></div>
+<div class="actions"><button type="button" class="secondary" id="welderSaveImageBtn">🖼️ Enregistrer la synthèse en image</button></div>
 <div id="welderSummary"><div class="empty">Chargement des passages…</div></div>
 <div class="status" id="welderStatus" aria-live="polite"></div>
 <p class="hint">Les passages sont conservés dans la mémoire de cette application sur cet appareil. Pense à garder une sauvegarde si tu changes de téléphone.</p>
