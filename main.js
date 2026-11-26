@@ -1686,6 +1686,151 @@ async function refreshWelderView() {
     });
   });
 }
+
+// Export de la synthèse soudeuse en image PNG, selon la période sélectionnée.
+function buildWelderSummaryCanvas(sessions, from, to) {
+  const now = Date.now();
+  const fromMs = from ? new Date(from + "T00:00:00").getTime() : 0;
+  const toMs = to ? new Date(to + "T23:59:59.999").getTime() : Infinity;
+  const filtered = sessions
+    .filter(session => session.startedAt >= fromMs && session.startedAt <= toMs)
+    .sort((a, b) => a.startedAt - b.startedAt);
+  const daily = new Map();
+  let totalMs = 0;
+  for (const session of filtered) {
+    const duration = welderSessionDurationMs(session, now);
+    totalMs += duration;
+    const key = localDateKey(session.startedAt);
+    daily.set(key, (daily.get(key) || 0) + duration);
+  }
+
+  const pad = 34, rowH = 38, titleH = 112, dailyH = 42;
+  const width = 900;
+  const height = Math.max(360, titleH + 72 + filtered.length * rowH + 64 + daily.size * dailyH + 50);
+  const canvas = document.createElement("canvas");
+  canvas.width = width * 2;
+  canvas.height = height * 2;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(2, 2);
+  ctx.fillStyle = "#f3f6fb";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = "#173b82";
+  ctx.fillRect(0, 0, width, 92);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 27px Arial";
+  ctx.fillText("SUIVI DU TEMPS À LA SOUDEUSE", pad, 39);
+  ctx.font = "15px Arial";
+  ctx.fillText(`${from || "Début"}  →  ${to || "Aujourd’hui"}`, pad, 67);
+
+  let y = 125;
+  ctx.fillStyle = "#172033";
+  ctx.font = "bold 20px Arial";
+  ctx.fillText(`Temps total : ${durationLabel(totalMs)}`, pad, y);
+  ctx.font = "15px Arial";
+  ctx.fillText(`${filtered.length} passage(s) enregistré(s)`, pad + 390, y);
+  y += 28;
+
+  const columns = [
+    { label: "DATE", x: pad, w: 220 },
+    { label: "ARRIVÉE", x: 250, w: 120 },
+    { label: "DÉPART", x: 390, w: 120 },
+    { label: "DURÉE", x: 540, w: 150 }
+  ];
+  ctx.fillStyle = "#e8efff";
+  ctx.fillRect(pad, y, width - pad * 2, 34);
+  ctx.font = "bold 13px Arial";
+  ctx.fillStyle = "#172033";
+  columns.forEach(c => ctx.fillText(c.label, c.x, y + 22));
+  y += 34;
+
+  ctx.font = "14px Arial";
+  filtered.forEach((session, index) => {
+    if (index % 2 === 1) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(pad, y, width - pad * 2, rowH);
+    }
+    const duration = welderSessionDurationMs(session, now);
+    const values = [
+      formatWelderDate(session.startedAt),
+      formatWelderTime(session.startedAt),
+      session.endedAt ? formatWelderTime(session.endedAt) : "En cours",
+      durationLabel(duration)
+    ];
+    ctx.fillStyle = "#172033";
+    values.forEach((value, i) => {
+      let text = String(value);
+      const max = i === 0 ? 30 : 18;
+      if (text.length > max) text = text.slice(0, max - 1) + "…";
+      ctx.fillText(text, columns[i].x, y + 24);
+    });
+    ctx.strokeStyle = "#dfe6f0";
+    ctx.beginPath(); ctx.moveTo(pad, y + rowH); ctx.lineTo(width - pad, y + rowH); ctx.stroke();
+    y += rowH;
+  });
+
+  y += 24;
+  ctx.font = "bold 19px Arial";
+  ctx.fillStyle = "#172033";
+  ctx.fillText("SYNTHÈSE PAR JOUR", pad, y);
+  y += 18;
+  for (const [date, ms] of [...daily.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    y += 30;
+    ctx.font = "15px Arial";
+    ctx.fillStyle = "#172033";
+    ctx.fillText(new Date(date + "T12:00:00").toLocaleDateString("fr-BE"), pad, y);
+    ctx.font = "bold 15px Arial";
+    ctx.fillText(durationLabel(ms), pad + 250, y);
+    ctx.strokeStyle = "#dfe6f0";
+    ctx.beginPath(); ctx.moveTo(pad, y + 10); ctx.lineTo(width - pad, y + 10); ctx.stroke();
+  }
+
+  if (!filtered.length) {
+    ctx.font = "16px Arial";
+    ctx.fillStyle = "#65718a";
+    ctx.fillText("Aucun passage enregistré sur cette période.", pad, y + 30);
+  }
+  ctx.font = "12px Arial";
+  ctx.fillStyle = "#65718a";
+  ctx.fillText("Synthèse générée depuis l’application Scan Châssis", pad, height - 18);
+  return canvas;
+}
+
+if ($("welderSaveImageBtn")) {
+  $("welderSaveImageBtn").addEventListener("click", async () => {
+    try {
+      const sessions = await allWelderSessions();
+      const from = $("welderStartDate")?.value || "";
+      const to = $("welderEndDate")?.value || "";
+      const canvas = buildWelderSummaryCanvas(sessions, from, to);
+      canvas.toBlob(blob => {
+        if (!blob) {
+          status("welderStatus", "Impossible de créer l’image PNG.", true);
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const opened = window.open(url, "_blank");
+        if (opened) {
+          status("welderStatus", "Image ouverte. Sur iPhone, fais un appui long sur l’image puis choisis « Enregistrer dans Photos ».");
+          setTimeout(() => URL.revokeObjectURL(url), 120000);
+        } else {
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `synthese-soudeuse-${from || "periode"}-${to || ""}.png`;
+          link.textContent = "Ouvrir / enregistrer la synthèse PNG";
+          link.style.display = "block";
+          link.style.marginTop = "10px";
+          $("welderStatus").appendChild(link);
+          status("welderStatus", "Ouvre le lien ci-dessous pour afficher l’image, puis enregistre-la dans Photos.");
+          setTimeout(() => URL.revokeObjectURL(url), 120000);
+        }
+      }, "image/png");
+    } catch (error) {
+      status("welderStatus", "Erreur lors de la création de l’image : " + (error.message || error), true);
+    }
+  });
+}
+
 if ($("welderArriveBtn")) $("welderArriveBtn").addEventListener("click", async () => {
   try {
     const sessions = await allWelderSessions();
