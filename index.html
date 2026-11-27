@@ -73,6 +73,10 @@ body { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)) !important;
 <label for="welderSearch">Rechercher dans les passages</label>
 <input id="welderSearch" type="search" placeholder="Date ou heure…">
 <div class="actions"><button type="button" class="secondary" id="welderFilterBtn">🔎 Rechercher / Actualiser</button><button type="button" class="neutral" id="welderTodayBtn">Aujourd’hui</button></div>
+<div class="field" style="margin-top:12px"><strong>Ajouter un jour en congé</strong>
+  <div class="grid"><div><label for="welderLeaveDate">Date du congé</label><input id="welderLeaveDate" type="date"></div>
+  <button type="button" class="secondary" id="welderAddLeaveBtn">➕ Ajouter le congé</button></div>
+</div>
 <div class="actions"><button type="button" class="secondary" id="welderSaveImageBtn">🖼️ Enregistrer la synthèse en image</button></div>
 <div id="welderSummary"><div class="empty">Chargement des passages…</div></div>
 <div class="status" id="welderStatus" aria-live="polite"></div>
