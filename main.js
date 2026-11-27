@@ -6,7 +6,7 @@ import { getFirestore, collection, doc, getDocs, setDoc, deleteDoc, serverTimest
 (() => {
 "use strict";
 
-const DB_NAME = "scanChassisDB", DB_VERSION = 2, STORE = "fiches", WELDER_STORE = "welderSessions";
+const DB_NAME = "scanChassisDB", DB_VERSION = 3, STORE = "fiches", WELDER_STORE = "welderSessions", WELDER_LEAVE_STORE = "welderLeaveDays";
 const OPS = ["Empilage","Double empilage","Retour","Double retour","Soudage / Nettoyage ouvrants","Soudage / Nettoyage dormants"];
 const OCR_PLACEHOLDER = "Le texte reconnu apparaîtra ici.";
 
@@ -305,6 +305,9 @@ function openDB() {
       if (!database.objectStoreNames.contains(WELDER_STORE)) {
         database.createObjectStore(WELDER_STORE, { keyPath: "id", autoIncrement: true });
       }
+      if (!database.objectStoreNames.contains(WELDER_LEAVE_STORE)) {
+        database.createObjectStore(WELDER_LEAVE_STORE, { keyPath: "id", autoIncrement: true });
+      }
     };
     request.onsuccess = () => { db = request.result; resolve(db); };
     request.onerror = () => reject(request.error);
@@ -351,6 +354,27 @@ function saveWelderSession(session) {
   return new Promise((resolve, reject) => {
     const req = db.transaction(WELDER_STORE, "readwrite").objectStore(WELDER_STORE)[session.id ? "put" : "add"](session);
     req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function allWelderLeaveDays() {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(WELDER_LEAVE_STORE, "readonly").objectStore(WELDER_LEAVE_STORE).getAll();
+    req.onsuccess = () => resolve(req.result.sort((a, b) => b.date.localeCompare(a.date)));
+    req.onerror = () => reject(req.error);
+  });
+}
+function saveWelderLeaveDay(item) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(WELDER_LEAVE_STORE, "readwrite").objectStore(WELDER_LEAVE_STORE)[item.id ? "put" : "add"](item);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+function deleteWelderLeaveDay(id) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(WELDER_LEAVE_STORE, "readwrite").objectStore(WELDER_LEAVE_STORE).delete(id);
+    req.onsuccess = resolve;
     req.onerror = () => reject(req.error);
   });
 }
@@ -1178,7 +1202,8 @@ $("exportBtn").addEventListener("click", async () => {
   try {
     const records = await allRecords();
     const welderSessions = await allWelderSessions();
-    const blob = new Blob([JSON.stringify({ app: "Scan Châssis", version: 2, exportedAt: new Date().toISOString(), records, welderSessions })], { type: "application/json" });
+    const welderLeaveDays = await allWelderLeaveDays();
+    const blob = new Blob([JSON.stringify({ app: "Scan Châssis", version: 3, exportedAt: new Date().toISOString(), records, welderSessions, welderLeaveDays })], { type: "application/json" });
     const url = URL.createObjectURL(blob), a = document.createElement("a");
     a.href = url; a.download = `scan-chassis-sauvegarde-${new Date().toISOString().slice(0,10)}.json`;
     document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
@@ -1211,6 +1236,16 @@ $("importInput").addEventListener("change", async e => {
       });
       added++;
     }
+    let leaveDaysAdded = 0;
+    if (Array.isArray(parsed.welderLeaveDays)) {
+      const existingLeaveDays = await allWelderLeaveDays();
+      const knownDates = new Set(existingLeaveDays.map(item => item.date));
+      for (const item of parsed.welderLeaveDays) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(item.date || "") || knownDates.has(item.date)) continue;
+        await saveWelderLeaveDay({ date: item.date, note: String(item.note || "") });
+        knownDates.add(item.date); leaveDaysAdded++;
+      }
+    }
     let sessionsAdded = 0;
     if (Array.isArray(parsed.welderSessions)) {
       const existingSessions = await allWelderSessions();
@@ -1230,7 +1265,7 @@ $("importInput").addEventListener("change", async e => {
     await refreshRecords();
     await refreshWelderView();
     scheduleAutomaticSync();
-    status("backupStatus", `Import terminé : ${added} fiche(s) ajoutée(s), ${skipped} ignorée(s), ${sessionsAdded} passage(s) soudeuse importé(s).`);
+    status("backupStatus", `Import terminé : ${added} fiche(s) ajoutée(s), ${skipped} ignorée(s), ${sessionsAdded} passage(s) soudeuse et ${leaveDaysAdded} jour(s) de congé importé(s).`);
   } catch (err) { status("backupStatus", "Import impossible : " + err.message, true); }
   finally { e.target.value = ""; }
 });
@@ -1540,6 +1575,7 @@ async function refreshWelderView() {
   const target = $("welderSummary");
   if (!target || !db) return;
   const sessions = await allWelderSessions();
+  const leaveDays = await allWelderLeaveDays();
   const active = sessions.find(session => !session.endedAt);
   const arriveBtn = $("welderArriveBtn"), leaveBtn = $("welderLeaveBtn");
   if (arriveBtn) arriveBtn.disabled = !!active;
@@ -1589,9 +1625,17 @@ async function refreshWelderView() {
       <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Départ de la soudeuse</th><th style="padding:9px;text-align:left">Retour à la soudeuse</th></tr></thead>
       <tbody>${absenceRows.length ? absenceRows.join("") : '<tr><td colspan="3" style="padding:9px">Aucune période à afficher pour cette date.</td></tr>'}</tbody>
     </table></div>`;
+  const filteredLeaveDays = leaveDays.filter(item => item.date >= (from || "0000-00-00") && item.date <= (to || "9999-12-31"));
+  const leaveTable = `
+    <h3 style="margin:16px 0 8px">Jours en congé</h3>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#fff1d6"><th style="padding:9px;text-align:left">Date</th><th style="padding:9px;text-align:left">Action</th></tr></thead>
+      <tbody>${filteredLeaveDays.length ? filteredLeaveDays.map(item => `<tr><td style="padding:9px">${escapeWelderText(new Date(item.date + "T12:00:00").toLocaleDateString("fr-BE"))}</td><td style="padding:9px"><button type="button" class="danger welder-leave-delete" data-id="${item.id}" style="padding:6px 9px;min-height:30px;font-size:12px">Supprimer</button></td></tr>`).join("") : '<tr><td colspan="2" style="padding:9px">Aucun jour de congé sur cette période.</td></tr>'}</tbody>
+    </table></div>`;
 
   if (!filtered.length) {
-    target.innerHTML = '<div class="empty">Aucun passage trouvé pour cette période.</div>' + absenceTable;
+    target.innerHTML = '<div class="empty">Aucun passage trouvé pour cette période.</div>' + absenceTable + leaveTable;
+    target.querySelectorAll('.welder-leave-delete').forEach(button => button.addEventListener('click', async () => { if (confirm('Supprimer ce jour de congé ?')) { await deleteWelderLeaveDay(Number(button.dataset.id)); await refreshWelderView(); } }));
     return;
   }
 
@@ -1630,12 +1674,18 @@ async function refreshWelderView() {
       <tbody>${rows}</tbody>
     </table></div>
     ${absenceTable}
+    ${leaveTable}
     <h3 style="margin:16px 0 8px">Synthèse par jour</h3>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="background:#e8efff"><th style="padding:9px;text-align:left">Jour</th><th style="padding:9px;text-align:left">Temps total</th></tr></thead>
       <tbody>${dailyRows}</tbody>
     </table></div>`;
 
+  target.querySelectorAll('.welder-leave-delete').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Supprimer ce jour de congé ?')) return;
+    await deleteWelderLeaveDay(Number(button.dataset.id));
+    await refreshWelderView();
+  }));
   target.querySelectorAll(".welder-edit").forEach(button => {
     button.addEventListener("click", async () => {
       const id = Number(button.dataset.id);
@@ -1689,13 +1739,14 @@ async function refreshWelderView() {
 }
 
 // Export de la synthèse soudeuse en image PNG, selon la période sélectionnée.
-function buildWelderSummaryCanvas(sessions, from, to) {
+function buildWelderSummaryCanvas(sessions, leaveDays, from, to) {
   const now = Date.now();
   const fromMs = from ? new Date(from + "T00:00:00").getTime() : 0;
   const toMs = to ? new Date(to + "T23:59:59.999").getTime() : Infinity;
   const filtered = sessions
     .filter(session => session.startedAt >= fromMs && session.startedAt <= toMs)
     .sort((a, b) => a.startedAt - b.startedAt);
+  const filteredLeaveDays = leaveDays.filter(item => item.date >= (from || "0000-00-00") && item.date <= (to || "9999-12-31"));
   const daily = new Map();
   const chronological = [...filtered].sort((a, b) => a.startedAt - b.startedAt);
   const absences = [];
@@ -1718,7 +1769,8 @@ function buildWelderSummaryCanvas(sessions, from, to) {
   const pad = 34, rowH = 38, titleH = 112, dailyH = 42;
   const width = 900;
   const absenceBlockH = 62 + absences.length * rowH;
-  const height = Math.max(420, titleH + 72 + filtered.length * rowH + absenceBlockH + 64 + daily.size * dailyH + 70);
+  const leaveBlockH = 72 + filteredLeaveDays.length * rowH;
+  const height = Math.max(420, titleH + 72 + filtered.length * rowH + absenceBlockH + leaveBlockH + 64 + daily.size * dailyH + 70);
   const canvas = document.createElement("canvas");
   canvas.width = width * 2;
   canvas.height = height * 2;
@@ -1816,6 +1868,21 @@ function buildWelderSummaryCanvas(sessions, from, to) {
   y += 24;
   ctx.font = "bold 19px Arial";
   ctx.fillStyle = "#172033";
+  ctx.fillText("JOURS EN CONGÉ", pad, y);
+  y += 16;
+  ctx.fillStyle = "#fff1d6"; ctx.fillRect(pad, y, width - pad * 2, 32);
+  ctx.font = "bold 13px Arial"; ctx.fillStyle = "#172033"; ctx.fillText("DATE", pad, y + 21);
+  y += 32; ctx.font = "14px Arial";
+  if (filteredLeaveDays.length) {
+    filteredLeaveDays.forEach((item, index) => {
+      if (index % 2 === 1) { ctx.fillStyle = "#ffffff"; ctx.fillRect(pad, y, width - pad * 2, rowH); }
+      ctx.fillStyle = "#172033"; ctx.fillText(new Date(item.date + "T12:00:00").toLocaleDateString("fr-BE"), pad, y + 24); y += rowH;
+    });
+  } else { ctx.fillStyle = "#65718a"; ctx.fillText("Aucun jour de congé enregistré sur cette période.", pad, y + 24); y += rowH; }
+
+  y += 24;
+  ctx.font = "bold 19px Arial";
+  ctx.fillStyle = "#172033";
   ctx.fillText("SYNTHÈSE PAR JOUR", pad, y);
   y += 18;
   for (const [date, ms] of [...daily.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -1844,9 +1911,10 @@ if ($("welderSaveImageBtn")) {
   $("welderSaveImageBtn").addEventListener("click", async () => {
     try {
       const sessions = await allWelderSessions();
+      const leaveDays = await allWelderLeaveDays();
       const from = $("welderStartDate")?.value || "";
       const to = $("welderEndDate")?.value || "";
-      const canvas = buildWelderSummaryCanvas(sessions, from, to);
+      const canvas = buildWelderSummaryCanvas(sessions, leaveDays, from, to);
       canvas.toBlob(blob => {
         if (!blob) {
           status("welderStatus", "Impossible de créer l’image PNG.", true);
@@ -1874,6 +1942,18 @@ if ($("welderSaveImageBtn")) {
     }
   });
 }
+
+if ($("welderAddLeaveBtn")) $("welderAddLeaveBtn").addEventListener("click", async () => {
+  const date = $("welderLeaveDate")?.value;
+  if (!date) { status("welderStatus", "Choisis d’abord une date de congé.", true); return; }
+  try {
+    const existing = await allWelderLeaveDays();
+    if (existing.some(item => item.date === date)) { status("welderStatus", "Cette date est déjà enregistrée comme congé.", true); return; }
+    await saveWelderLeaveDay({ date });
+    await refreshWelderView();
+    status("welderStatus", "Jour de congé ajouté.");
+  } catch (error) { status("welderStatus", "Impossible d’ajouter le congé : " + error.message, true); }
+});
 
 if ($("welderArriveBtn")) $("welderArriveBtn").addEventListener("click", async () => {
   try {
